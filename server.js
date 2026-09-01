@@ -51,7 +51,6 @@ const Star = mongoose.model('Star', StarSchema);
 // ===== Бот =====
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// --- Хелперы для ачивок ---
 function getAchievements(stars, user) {
   const total = stars.length;
   const likes = stars.reduce((sum, s) => sum + (s.likes || 0), 0);
@@ -75,7 +74,6 @@ function getUserLevel(stars) {
   return { level: 1, label: '🌱 Новичок' };
 }
 
-// --- Команды бота ---
 bot.start((ctx) => {
   const payload = ctx.payload;
   const user = ctx.from;
@@ -130,7 +128,6 @@ bot.start((ctx) => {
   }
 });
 
-// Обработка кнопок
 bot.action('stats', async (ctx) => {
   await ctx.answerCbQuery();
   const user = await User.findOne({ telegramId: String(ctx.from.id) });
@@ -163,7 +160,6 @@ bot.action('invite', async (ctx) => {
   );
 });
 
-// Команда /stats
 bot.command('stats', async (ctx) => {
   const user = await User.findOne({ telegramId: String(ctx.from.id) });
   const stars = await Star.find({ creatorId: String(ctx.from.id) });
@@ -185,7 +181,6 @@ bot.command('stats', async (ctx) => {
   );
 });
 
-// Команда /invite
 bot.command('invite', async (ctx) => {
   const link = `https://t.me/${ctx.botInfo.username}?start=invite`;
   ctx.replyWithMarkdown(
@@ -195,35 +190,38 @@ bot.command('invite', async (ctx) => {
   );
 });
 
-// === НОВАЯ ФУНКЦИЯ УВЕДОМЛЕНИЯ (без проверки в базе) ===
+// === УВЕДОМЛЕНИЕ (с проверкой в базе) ===
 async function sendMentionNotification(mentionedUsername, starId, starName, creatorName, anonymous) {
   try {
-    const chatId = '@' + mentionedUsername.replace('@', '');
-    const author = anonymous ? 'Анонимный пользователь' : (creatorName || 'Кто-то');
-    await bot.telegram.sendMessage(
-      chatId,
-      `🌟 *В твою честь зажгли звезду!*\n\n` +
-      `Автор: *${author}*\n` +
-      `Имя на звезде: *${starName}*\n\n` +
-      `Открой её в приложении:`,
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🌠 Открыть звезду', web_app: { url: `${process.env.WEBAPP_URL}?star=${starId}` } }]
-          ]
-        },
-        parse_mode: 'Markdown'
-      }
-    );
+    const user = await User.findOne({ username: mentionedUsername.replace('@', '') });
+    if (user && user.telegramId) {
+      const author = anonymous ? 'Анонимный пользователь' : (creatorName || 'Кто-то');
+      await bot.telegram.sendMessage(
+        user.telegramId,
+        `🌟 *В твою честь зажгли звезду!*\n\n` +
+        `Автор: *${author}*\n` +
+        `Имя на звезде: *${starName}*\n\n` +
+        `Открой её в приложении:`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🌠 Открыть звезду', web_app: { url: `${process.env.WEBAPP_URL}?star=${starId}` } }]
+            ]
+          },
+          parse_mode: 'Markdown'
+        }
+      );
+      console.log(`✅ Уведомление отправлено пользователю @${mentionedUsername}`);
+    } else {
+      console.log(`⚠️ Пользователь @${mentionedUsername} не зарегистрирован, уведомление не отправлено`);
+    }
   } catch (e) {
-    // Игнорируем ошибки (например, пользователь не найден или заблокировал бота)
-    console.error(`Не удалось отправить уведомление @${mentionedUsername}:`, e.message);
+    console.error(`❌ Ошибка при отправке уведомления @${mentionedUsername}:`, e.message);
   }
 }
 
 // ===== API =====
 
-// Получить все звёзды (с пагинацией)
 app.get('/api/stars', async (req, res) => {
   const limit = parseInt(req.query.limit) || 50;
   const skip = parseInt(req.query.skip) || 0;
@@ -234,14 +232,12 @@ app.get('/api/stars', async (req, res) => {
   res.json({ stars, total });
 });
 
-// Получить одну звезду
 app.get('/api/stars/:id', async (req, res) => {
   const star = await Star.findOne({ id: parseInt(req.params.id) });
   if (!star) return res.status(404).json({ error: 'Звезда не найдена' });
   res.json(star);
 });
 
-// Создать звезду
 app.post('/api/stars', async (req, res) => {
   const { name, message, year, anonymous, constellation, constellationId, position, photo, creatorId, creatorUsername } = req.body;
   if (!name) return res.status(400).json({ error: 'Имя обязательно' });
@@ -251,7 +247,6 @@ app.post('/api/stars', async (req, res) => {
     return res.status(429).json({ error: 'Сегодня ты уже зажёг звезду. Попробуй завтра!' });
   }
 
-  // Извлекаем упоминания @username
   const mentions = [];
   if (message) {
     const regex = /@(\w+)/g;
@@ -289,7 +284,6 @@ app.post('/api/stars', async (req, res) => {
     await newUser.save();
   }
 
-  // Ачивки (проверяем после сохранения)
   const userStars = await Star.find({ creatorId });
   const ach = getAchievements(userStars, user);
   const unlocked = ach.filter(a => a.unlocked).map(a => a.id);
@@ -298,16 +292,15 @@ app.post('/api/stars', async (req, res) => {
     await user.save();
   }
 
-  // Отправляем уведомления (пропускаем самого автора)
+  // Отправляем уведомления только тем, кто зарегистрирован
   for (const username of mentions) {
-    if (username === creatorUsername && !anonymous) continue; // не слать себе
+    if (username === creatorUsername && !anonymous) continue;
     await sendMentionNotification(username, star.id, name, creatorUsername, anonymous);
   }
 
   res.status(201).json(star);
 });
 
-// Лайк
 app.put('/api/stars/:id/like', async (req, res) => {
   const star = await Star.findOne({ id: parseInt(req.params.id) });
   if (!star) return res.status(404).json({ error: 'Не найдено' });
@@ -323,7 +316,6 @@ app.put('/api/stars/:id/like', async (req, res) => {
   res.json({ likes: star.likes });
 });
 
-// Реакция
 app.put('/api/stars/:id/reaction', async (req, res) => {
   const { emoji } = req.body;
   if (!emoji) return res.status(400).json({ error: 'Эмодзи обязателен' });
@@ -336,7 +328,6 @@ app.put('/api/stars/:id/reaction', async (req, res) => {
   res.json({ reactions: Object.fromEntries(star.reactions) });
 });
 
-// Получить достижения пользователя с прогрессом
 app.get('/api/achievements/:telegramId', async (req, res) => {
   const user = await User.findOne({ telegramId: req.params.telegramId });
   const stars = await Star.find({ creatorId: req.params.telegramId });
@@ -344,14 +335,12 @@ app.get('/api/achievements/:telegramId', async (req, res) => {
   res.json({ achievements: ach });
 });
 
-// Получить уровень пользователя
 app.get('/api/user-level/:telegramId', async (req, res) => {
   const stars = await Star.find({ creatorId: req.params.telegramId });
   const level = getUserLevel(stars);
   res.json(level);
 });
 
-// Статистика (общая)
 app.get('/api/stats', async (req, res) => {
   const totalStars = await Star.countDocuments();
   const totalUsers = await User.countDocuments();
@@ -360,10 +349,10 @@ app.get('/api/stats', async (req, res) => {
   res.json({ totalStars, totalUsers, totalLikes });
 });
 
-// ===== Вебхук для бота =====
+// ===== Вебхук =====
 app.use(bot.webhookCallback('/webhook'));
 
-// ===== Ежедневное напоминание (cron) =====
+// ===== Cron =====
 cron.schedule('0 10 * * *', async () => {
   console.log('⏰ Запуск ежедневного напоминания...');
   const users = await User.find();
@@ -391,13 +380,12 @@ cron.schedule('0 10 * * *', async () => {
   timezone: "Europe/Moscow"
 });
 
-// ===== Запуск сервера =====
+// ===== Запуск =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Сервер запущен на порту ${PORT}`);
 });
 
-// Установка вебхука при старте
 if (process.env.BOT_TOKEN && process.env.RENDER_EXTERNAL_URL) {
   const webhookUrl = `${process.env.RENDER_EXTERNAL_URL}/webhook`;
   bot.telegram.setWebhook(webhookUrl)
