@@ -8,8 +8,13 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-mongoose.connect(process.env.MONGODB_URI);
+// Подключение к MongoDB
+mongoose.connect(process.env.MONGODB_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+});
 
+// Схемы
 const UserSchema = new mongoose.Schema({
   telegramId: { type: String, unique: true },
   username: String,
@@ -39,8 +44,10 @@ const StarSchema = new mongoose.Schema({
 });
 const Star = mongoose.model('Star', StarSchema);
 
+// Бот
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
+// Обработчик команды /start
 bot.start((ctx) => {
   const payload = ctx.payload;
   if (payload && payload.startsWith('star_')) {
@@ -63,6 +70,7 @@ bot.start((ctx) => {
   }
 });
 
+// Уведомления об упоминаниях
 async function sendMentionNotification(mentionedUsername, starId, starName) {
   try {
     const user = await User.findOne({ username: mentionedUsername.replace('@', '') });
@@ -75,7 +83,7 @@ async function sendMentionNotification(mentionedUsername, starId, starName) {
   } catch (e) { console.error('Ошибка уведомления:', e); }
 }
 
-// API
+// ===== API =====
 app.get('/api/stars', async (req, res) => {
   const limit = parseInt(req.query.limit) || 50;
   const skip = parseInt(req.query.skip) || 0;
@@ -162,13 +170,19 @@ app.get('/api/achievements/:telegramId', async (req, res) => {
   res.json({ achievements: user.achievements || [] });
 });
 
-if (process.env.BOT_TOKEN && process.env.RENDER_EXTERNAL_URL) {
-  bot.telegram.setWebhook(`${process.env.RENDER_EXTERNAL_URL}/webhook`)
-    .then(() => console.log('Вебхук установлен'))
-    .catch(err => console.error('Ошибка установки вебхука:', err));
-}
+// ===== ВАЖНО: обработчик вебхука =====
+app.use(bot.webhookCallback('/webhook'));
 
+// ===== Запуск =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Сервер запущен на порту ${PORT}`);
 });
+
+// Установка вебхука при старте (если переменные заданы)
+if (process.env.BOT_TOKEN && process.env.RENDER_EXTERNAL_URL) {
+  const webhookUrl = `${process.env.RENDER_EXTERNAL_URL}/webhook`;
+  bot.telegram.setWebhook(webhookUrl)
+    .then(() => console.log(`Вебхук установлен: ${webhookUrl}`))
+    .catch(err => console.error('Ошибка установки вебхука:', err));
+}
