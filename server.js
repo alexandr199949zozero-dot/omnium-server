@@ -195,25 +195,30 @@ bot.command('invite', async (ctx) => {
   );
 });
 
-// Уведомления об упоминаниях
-async function sendMentionNotification(mentionedUsername, starId, starName) {
+// === НОВАЯ ФУНКЦИЯ УВЕДОМЛЕНИЯ (без проверки в базе) ===
+async function sendMentionNotification(mentionedUsername, starId, starName, creatorName, anonymous) {
   try {
-    const user = await User.findOne({ username: mentionedUsername.replace('@', '') });
-    if (user && user.telegramId) {
-      await bot.telegram.sendMessage(
-        user.telegramId,
-        `🌟 *В твою честь зажгли звезду!*\n\nИмя: *${starName}*\n\nОткрой её в приложении:`,
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🌠 Открыть звезду', web_app: { url: `${process.env.WEBAPP_URL}?star=${starId}` } }]
-            ]
-          },
-          parse_mode: 'Markdown'
-        }
-      );
-    }
-  } catch (e) { console.error('Ошибка уведомления:', e); }
+    const chatId = '@' + mentionedUsername.replace('@', '');
+    const author = anonymous ? 'Анонимный пользователь' : (creatorName || 'Кто-то');
+    await bot.telegram.sendMessage(
+      chatId,
+      `🌟 *В твою честь зажгли звезду!*\n\n` +
+      `Автор: *${author}*\n` +
+      `Имя на звезде: *${starName}*\n\n` +
+      `Открой её в приложении:`,
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🌠 Открыть звезду', web_app: { url: `${process.env.WEBAPP_URL}?star=${starId}` } }]
+          ]
+        },
+        parse_mode: 'Markdown'
+      }
+    );
+  } catch (e) {
+    // Игнорируем ошибки (например, пользователь не найден или заблокировал бота)
+    console.error(`Не удалось отправить уведомление @${mentionedUsername}:`, e.message);
+  }
 }
 
 // ===== API =====
@@ -246,6 +251,7 @@ app.post('/api/stars', async (req, res) => {
     return res.status(429).json({ error: 'Сегодня ты уже зажёг звезду. Попробуй завтра!' });
   }
 
+  // Извлекаем упоминания @username
   const mentions = [];
   if (message) {
     const regex = /@(\w+)/g;
@@ -292,9 +298,10 @@ app.post('/api/stars', async (req, res) => {
     await user.save();
   }
 
-  // Уведомления
+  // Отправляем уведомления (пропускаем самого автора)
   for (const username of mentions) {
-    await sendMentionNotification(username, star.id, name);
+    if (username === creatorUsername && !anonymous) continue; // не слать себе
+    await sendMentionNotification(username, star.id, name, creatorUsername, anonymous);
   }
 
   res.status(201).json(star);
